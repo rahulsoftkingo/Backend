@@ -3,11 +3,11 @@ from fastapi import APIRouter, HTTPException, status
 from typing import Optional
 from pydantic import BaseModel
 from db import db
-from datetime import datetime, timezone
 import os
 import time
 from agora_token_builder import RtcTokenBuilder
 from prisma.errors import ForeignKeyViolationError, UniqueViolationError, PrismaError
+from datetime import date, datetime, timedelta
 
 from db import db
 
@@ -553,15 +553,15 @@ async def get_recommendations(
             idx += 1
 
         age_clause = ""
-        today = date.today()
+        today = datetime.today()
         if max_age is not None:
             oldest_dob = today - timedelta(days=(max_age + 1) * 365.25)
-            age_clause += f' AND p."dateOfBirth" >= ${idx}'
+            age_clause += f' AND p."birthDate" >= ${idx}::timestamp'
             params.append(oldest_dob)
             idx += 1
         if min_age is not None:
             youngest_dob = today - timedelta(days=min_age * 365.25)
-            age_clause += f' AND p."dateOfBirth" <= ${idx}'
+            age_clause += f' AND p."birthDate" <= ${idx}::timestamp'
             params.append(youngest_dob)
             idx += 1
 
@@ -643,7 +643,7 @@ async def get_recommendations(
         profile_filter["height"] = height_condition
 
     if min_age is not None or max_age is not None:
-        today = date.today()
+        today = datetime.now()
         dob_condition = {}
         if max_age is not None:
             oldest_dob = today - timedelta(days=(max_age + 1) * 365.25)
@@ -651,15 +651,57 @@ async def get_recommendations(
         if min_age is not None:
             youngest_dob = today - timedelta(days=min_age * 365.25)
             dob_condition["lte"] = youngest_dob
-        profile_filter["dateOfBirth"] = dob_condition
+        profile_filter["birthDate"] = dob_condition
 
-    where_condition = {
-        "id": {"not_in": interacted_list},
-        "status": "ACTIVE"
-    }
+    where_condition = {"status": "ACTIVE"}
+    excluded_set = set(interacted_list)
+
     if profile_filter:
-        where_condition["profile"] = profile_filter
+        conditions = []
+        params = []
+        idx = 1
 
+        if "gender" in profile_filter:
+            conditions.append(f'p."gender" = ANY(${idx}::"Gender"[])')
+            params.append(profile_filter["gender"]["in"])
+            idx += 1
+
+        if "height" in profile_filter:
+            h = profile_filter["height"]
+            if "gte" in h:
+                conditions.append(f'p."height" >= ${idx}')
+                params.append(h["gte"])
+                idx += 1
+            if "lte" in h:
+                conditions.append(f'p."height" <= ${idx}')
+                params.append(h["lte"])
+                idx += 1
+
+        if "birthDate" in profile_filter:
+            d = profile_filter["birthDate"]
+            if "gte" in d:
+                conditions.append(f'p."birthDate" >= ${idx}::timestamp')
+                params.append(d["gte"])
+                idx += 1
+                
+        if "lte" in d:
+            conditions.append(f'p."birthDate" <= ${idx}::timestamp')
+            params.append(d["lte"])
+            idx += 1
+
+        where_sql = " AND ".join(conditions) if conditions else "TRUE"
+        raw_query = f'SELECT p."userId" FROM "Profile" p WHERE {where_sql}'
+        rows = await db.query_raw(raw_query, *params)
+
+        matching_user_ids = [r["userId"] for r in rows if r["userId"] not in excluded_set]
+
+        if not matching_user_ids:
+            return {"recommendations": [], "total": 0}
+
+        where_condition["id"] = {"in": matching_user_ids}
+    else:
+        where_condition["id"] = {"not_in": interacted_list}
+        
     count_task = db.user.count(where=where_condition)
     candidates_task = db.user.find_many(
         where=where_condition,
@@ -677,7 +719,8 @@ async def get_recommendations(
 
     return {
         "recommendations": final_list,
-        "total": total_count
+        "total": total_count,
+        "total intereste" :interacted_list
     }
     
 """
