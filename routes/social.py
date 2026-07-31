@@ -7,7 +7,8 @@ import os
 import time
 from agora_token_builder import RtcTokenBuilder
 from prisma.errors import ForeignKeyViolationError, UniqueViolationError, PrismaError
-from datetime import date, datetime, timedelta
+from datetime import date,datetime,timedelta,timezone
+
 
 from db import db
 
@@ -684,10 +685,10 @@ async def get_recommendations(
                 params.append(d["gte"])
                 idx += 1
                 
-        if "lte" in d:
-            conditions.append(f'p."birthDate" <= ${idx}::timestamp')
-            params.append(d["lte"])
-            idx += 1
+            if "lte" in d:
+                conditions.append(f'p."birthDate" <= ${idx}::timestamp')
+                params.append(d["lte"])
+                idx += 1
 
         where_sql = " AND ".join(conditions) if conditions else "TRUE"
         raw_query = f'SELECT p."userId" FROM "Profile" p WHERE {where_sql}'
