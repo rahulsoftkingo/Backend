@@ -35,6 +35,8 @@ model User {
   conversationClears   ConversationClear[]
   interactionsGiven    Interaction[]        @relation("InteractionsFrom")
   interactionsReceived Interaction[]        @relation("InteractionsTo")
+  profileViewsGiven    ProfileView[]        @relation("ProfileViewsFrom")
+  profileViewsReceived ProfileView[]        @relation("ProfileViewsTo")
   matchesAsUser1       Match[]              @relation("User1Matches")
   matchesAsUser2       Match[]              @relation("User2Matches")
   personalityInsight   Json?
@@ -103,6 +105,10 @@ model Profile {
   music              String[]     @default([])
   movie              String[]     @default([])
   book               String[]     @default([])
+  sports             String[]     @default([])
+  gastronomic        String[]     @default([])
+  travelling         String[]     @default([])
+  character          String[]     @default([])
   minAgePref         Int?         @default(18)
   maxAgePref         Int?         @default(99)
   maxDistance        Int?         @default(50)
@@ -118,7 +124,8 @@ model Profile {
   smoking            String?
   interests          String[]     @default([])
   languages          String[]     @default([])
-  occupation         String?
+  traits             String[]     @default([])
+  occupation         String?    
   promptHeartWay     String?
   promptHopingYou    String?
   drinkingPref       String?
@@ -615,4 +622,17 @@ model ChatTheme {
   user  User  @relation(fields: [userId], references: [id])
 
   @@unique([matchId, userId]) 
+}
+
+
+model ProfileView {
+  id         Int      @id @default(autoincrement())
+  fromUserId Int      // jisne profile dekhi (viewer)
+  toUserId   Int      // jiski profile dekhi gayi (viewed)
+  createdAt  DateTime @default(now())
+
+  fromUser   User     @relation("ProfileViewsFrom", fields: [fromUserId], references: [id])
+  toUser     User     @relation("ProfileViewsTo", fields: [toUserId], references: [id])
+
+  @@unique([fromUserId, toUserId])
 }

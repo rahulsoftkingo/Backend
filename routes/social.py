@@ -30,6 +30,23 @@ class ChatThemeRequest(BaseModel):
     fromUserId: int
     matchId: int
     theme: str  
+
+
+class ViewProfileRequest(BaseModel):
+    fromUserId: int   
+    toUserId: int    
+    
+
+class RecommendationRequest(BaseModel):
+    user_id: int
+    skip: int = 0
+    take: int = 20
+    min_age: int | None = None
+    max_age: int | None = None
+    min_height: float | None = None
+    max_height: float | None = None
+    max_distance_km: float | None = None
+    gender: str | None = None 
     
 THEME_IMAGE_MAP = {
     "BLUE": "/uploads/themes/blue.jpg",
@@ -362,6 +379,9 @@ async def delete_messages_by_match(matchId: str):
     }
 
 
+# @router.post("/viewusers")
+# async def interact(data: Interacti
+
 # @router.push("/push/notifications")
 # async def delete_messages_by_match(matchId: str):
 #     # 1. Find the match and its associated conversation
@@ -478,17 +498,18 @@ async def delete_messages_by_match(matchId: str):
 #     }
 
 
-@router.get("/recommendations/{user_id}")
-async def get_recommendations(
-    user_id: int,
-    skip: int = 0,
-    take: int = 20,
-    min_age: int | None = None,
-    max_age: int | None = None,
-    min_height: float | None = None,
-    max_height: float | None = None,
-    max_distance_km: float | None = None,
-):
+@router.post("/recommendations")
+async def get_recommendations(data: RecommendationRequest):
+
+    user_id = data.user_id
+    skip = data.skip
+    take = data.take
+    min_age = data.min_age
+    max_age = data.max_age
+    min_height = data.min_height
+    max_height = data.max_height
+    max_distance_km = data.max_distance_km
+    gender = data.gender  # new manual override filter
 
     # 1. fetch our user profile
     user = await db.user.find_unique(
@@ -508,7 +529,7 @@ async def get_recommendations(
     my_lat = getattr(profile, "latitude", None)
     my_lng = getattr(profile, "longitude", None)
 
-    # 2. Opposite Gender Logic
+    # 2. Opposite Gender Logic (default behaviour, unchanged)
     if not interested_in or len(interested_in) == 0:
         if my_gender == "MALE":
             interested_in = ["FEMALE"]
@@ -516,6 +537,19 @@ async def get_recommendations(
             interested_in = ["MALE"]
         else:
             interested_in = []
+
+    # 2b. NEW — agar request mein manually `gender` bheja gaya hai,
+    # to woh interested_in ko override kar dega (validate karke
+    # ki wo aapke Gender enum mein se hi ho)
+    valid_genders = {"MALE", "FEMALE", "NON_BINARY", "TRANSGENDER", "OTHER"}
+    if gender:
+        gender_upper = gender.strip().upper()
+        if gender_upper not in valid_genders:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid gender value. Allowed: {', '.join(valid_genders)}"
+            )
+        interested_in = [gender_upper]
 
     # 3. Interacted users ki list
     interacted = await db.interaction.find_many(
@@ -533,7 +567,6 @@ async def get_recommendations(
         excluded = interacted_list or [0]
         excluded_sql = ",".join(str(i) for i in excluded)
 
-        conditions = [f'u.id NOT IN ({excluded_sql})', 'u.status = \'ACTIVE\'']
         params = [my_lat, my_lng]  # $1 = my_lat, $2 = my_lng
         idx = 3
 
@@ -684,7 +717,6 @@ async def get_recommendations(
                 conditions.append(f'p."birthDate" >= ${idx}::timestamp')
                 params.append(d["gte"])
                 idx += 1
-                
             if "lte" in d:
                 conditions.append(f'p."birthDate" <= ${idx}::timestamp')
                 params.append(d["lte"])
@@ -702,7 +734,7 @@ async def get_recommendations(
         where_condition["id"] = {"in": matching_user_ids}
     else:
         where_condition["id"] = {"not_in": interacted_list}
-        
+
     count_task = db.user.count(where=where_condition)
     candidates_task = db.user.find_many(
         where=where_condition,
@@ -720,8 +752,7 @@ async def get_recommendations(
 
     return {
         "recommendations": final_list,
-        "total": total_count,
-        "total intereste" :interacted_list
+        "total": total_count
     }
     
 """
@@ -1029,6 +1060,94 @@ async def get_chat_theme(match_id: int, userId: int):
         "otherUserTheme": other_theme.theme if other_theme else None,
         "isSuperMatch": is_super_match
     }  
+    
+    
+@router.post("/view-profile")
+async def view_profile(data: ViewProfileRequest):
+    if data.fromUserId == data.toUserId:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot record a view of your own profile"
+        )
+
+    # Dono users exist karte hain ya nahi, check karo
+    try:
+        from_user = await db.user.find_unique(where={"id": data.fromUserId})
+        to_user = await db.user.find_unique(where={"id": data.toUserId})
+    except PrismaError as e:
+        raise HTTPException(status_code=500, detail=f"Error validating users: {str(e)}")
+
+    if not from_user:
+        raise HTTPException(status_code=404, detail="Viewer (fromUserId) not found")
+    if not to_user:
+        raise HTTPException(status_code=404, detail="Target user (toUserId) not found")
+
+    # Upsert — agar pehle bhi dekha hai to sirf timestamp update ho,
+    # duplicate row na bane (matches @@unique([fromUserId, toUserId]))
+    try:
+        view = await db.profileview.upsert(
+            where={
+                "fromUserId_toUserId": {
+                    "fromUserId": data.fromUserId,
+                    "toUserId": data.toUserId
+                }
+            },
+            data={
+                "create": {
+                    "fromUserId": data.fromUserId,
+                    "toUserId": data.toUserId
+                },
+                "update": {
+                    "createdAt": datetime.now(timezone.utc)
+                }
+            }
+        )
+    except PrismaError as e:
+        raise HTTPException(status_code=500, detail=f"Error saving profile view: {str(e)}")
+
+    return {
+        "message": "Profile view recorded",
+        "fromUserId": data.fromUserId,
+        "toUserId": data.toUserId,
+        "viewedAt": view.createdAt
+    }
+    
+@router.get("/profiles-viewed/{user_id}")
+async def profiles_i_viewed(user_id: int):
+    try:
+        user = await db.user.find_unique(where={"id": user_id})
+    except PrismaError as e:
+        raise HTTPException(status_code=500, detail=f"Error validating user: {str(e)}")
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    try:
+        views = await db.profileview.find_many(
+            where={"fromUserId": user_id},
+            include={
+                "toUser": {
+                    "include": {"profile": True, "photos": True}
+                }
+            },
+            order={"createdAt": "desc"}
+        )
+    except PrismaError as e:
+        raise HTTPException(status_code=500, detail=f"Error fetching viewed profiles: {str(e)}")
+
+    result = [
+        {
+            "viewedUser": v.toUser,
+            "viewedAt": v.createdAt
+        }
+        for v in views
+    ]
+
+    return {
+        "userId": user_id,
+        "totalViewed": len(result),
+        "viewedProfiles": result
+    }
 # @router.post("/token/subscribe")
 
 # @router.get("/recommendations/{user_id}")
