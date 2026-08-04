@@ -1055,11 +1055,11 @@ async def get_chat_theme(match_id: int, userId: int):
         my_theme and other_theme and my_theme.theme == other_theme.theme
     )
     return {
-        "matchId": match_id,
-        "myTheme": my_theme.theme if my_theme else None,
-        "otherUserTheme": other_theme.theme if other_theme else None,
-        "isSuperMatch": is_super_match
-    }  
+    "matchId": match_id,
+    "myTheme": f"/uploads/themes/{my_theme.theme.lower()}.jpg" if my_theme and my_theme.theme else None,
+    "otherUserTheme": f"/uploads/themes/{other_theme.theme.lower()}.jpg" if other_theme and other_theme.theme else None,
+    "isSuperMatch": is_super_match
+    }
     
     
 @router.post("/view-profile")
