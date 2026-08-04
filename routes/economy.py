@@ -1153,9 +1153,50 @@ async def send_gift(data: SendGiftRequest):
             }
         )
 
+        # ---- find match + conversation, with reason tracking ----
+        message = None
+        message_skipped_reason = None
+
+        match = await db.match.find_first(
+            where={
+                "OR": [
+                    {"user1Id": data.sender_id, "user2Id": data.receiver_id},
+                    {"user1Id": data.receiver_id, "user2Id": data.sender_id},
+                ]
+            },
+            include={"conversation": True}
+        )
+
+        if not match:
+            message_skipped_reason = f"No Match row found between sender {data.sender_id} and receiver {data.receiver_id}"
+        elif not match.conversation:
+            message_skipped_reason = f"Match {match.id} exists but has no linked Conversation row"
+        else:
+            try:
+                message = await db.message.create(
+                    data={
+                        "conversationId": match.conversation.id,
+                        "senderId": data.sender_id,
+                        "content": f"Sent a gift: {item.name}",
+                        "type": "STICKER",
+                        "mediaUrl": item.imageUrl,
+                    }
+                )
+            except Exception as msg_err:
+                message_skipped_reason = f"Message insert failed: {str(msg_err)}"
+
+        # ---- log server-side so it's visible even without checking response ----
+        if message_skipped_reason:
+            print("MESSAGE NOT CREATED:", message_skipped_reason)
+        else:
+            print("MESSAGE CREATED:", message.id)
+
         return {
             "message": "Gift sent successfully",
-            "sent_gift_id": sent_gift.id
+            "sent_gift_id": sent_gift.id,
+            "message_id": message.id if message else None,
+            "message_created": message is not None,
+            "message_skipped_reason": message_skipped_reason
         }
 
     except HTTPException as e:
