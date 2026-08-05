@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, UploadFile, File, status
+from fastapi import APIRouter, HTTPException, UploadFile,File,status,Form
 from prisma.errors import PrismaError
 from typing import Optional
 from pydantic import BaseModel
@@ -406,62 +406,126 @@ async def clear_chat(data: ClearChatRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to clear chat: {str(e)}")
 
+
 @router.post("/upload/audio")
-async def upload_audio(file: UploadFile = File(...)):
+async def upload_audio(
+    file: UploadFile = File(...),
+    senderId: int = Form(...),
+    receiverId: int = Form(...),
+    matchId: int = Form(...),
+):
+    # ---------- STEP 1: Basic file validation ----------
     try:
-        # Check if file is provided
-        if file is None:
+        if file is None or not file.filename:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No audio file received."
+                detail="Invalid or missing audio file."
             )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"File validation error: {str(e)}")
 
-        # Check file name
-        if not file.filename:
+    # ---------- STEP 2: Validate match + sender/receiver ----------
+    try:
+        match = await db.match.find_unique(where={"id": matchId})
+
+        if not match:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid file."
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Match not found."
             )
 
-        # Create uploads folder if not exists
+        valid_pair = (
+            {match.user1Id, match.user2Id} == {senderId, receiverId}
+        )
+        if not valid_pair:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Sender or receiver does not belong to this match."
+            )
+
+        conversation = await db.conversation.find_unique(
+            where={"matchId": matchId}
+        )
+        if not conversation:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Conversation not found for this match."
+            )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        print("Match/Conversation Validation Error:")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to validate match: {str(e)}"
+        )
+
+    # ---------- STEP 3: Save file to disk ----------
+    try:
         upload_dir = "uploads/audio"
         os.makedirs(upload_dir, exist_ok=True)
 
-        # Get extension from original file
-        ext = os.path.splitext(file.filename)[1]
-        if not ext:
-            ext = ".mp3"
-
+        ext = os.path.splitext(file.filename)[1] or ".mp3"
         filename = f"{uuid.uuid4()}{ext}"
         file_path = os.path.join(upload_dir, filename)
 
-        # Read uploaded file
         contents = await file.read()
-
         if not contents:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Uploaded audio file is empty."
             )
 
-        # Save file
         with open(file_path, "wb") as f:
             f.write(contents)
 
-        return {
-            "success": True,
-            "message": "Audio uploaded successfully.",
-            "audio_url": f"/uploads/audio/{filename}"
-        }
+        audio_url = f"/uploads/audio/{filename}"
 
     except HTTPException:
         raise
-
     except Exception as e:
-        print("Audio Upload Error:")
-        traceback.print_exc()  # Full error in terminal
-
+        print("Audio Save Error:")
+        traceback.print_exc()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to upload audio: {str(e)}"
+            detail=f"Failed to save audio file: {str(e)}"
         )
+
+    # ---------- STEP 4: Create AUDIO message in DB ----------
+    try:
+        message = await db.message.create(
+            data={
+                "conversationId": conversation.id,
+                "senderId": senderId,
+                "content": "",
+                "type": "AUDIO",
+                "mediaUrl": audio_url,
+            }
+        )
+    except Exception as e:
+        print("Message Create Error:")
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Audio saved but failed to create message record: {str(e)}"
+        )
+
+    # ---------- STEP 5: Success response ----------
+    return {
+        "success": True,
+        "message": "Audio message sent successfully.",
+        "audio_url": audio_url,
+        "data": {
+            "messageId": message.id,
+            "conversationId": conversation.id,
+            "senderId": senderId,
+            "receiverId": receiverId,
+            "matchId": matchId,
+            "type": message.type,
+            "createdAt": message.createdAt,
+        }
+    }
